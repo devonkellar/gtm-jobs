@@ -1,0 +1,76 @@
+# Smartlead reply sync -- the first job migrated off the laptop.
+#
+# WHY THIS ONE FIRST
+# smartlead_sync.py is the producer of replies_log.csv, which 20 scripts across
+# three repos read. Everything else in the migration is downstream of it, so
+# proving it in CI unblocks the rest.
+#
+# WHY ACTIONS AND NOT RAILWAY
+# Measured runtime on the laptop is 565s against Actions' 6-hour ceiling. Same
+# reasoning as hiring-pull.yml: this is minutes of API calls, not a long-running
+# worker, so the ceiling is irrelevant and a cron trigger is the whole runtime.
+#
+# STATE WARNING -- READ BEFORE ENABLING THE CRON
+# The script still writes replies_log.csv to disk. A CI runner is stateless, so
+# the file starts empty every run and is thrown away at the end. That is fine
+# for --dry-run (which writes nothing) but means a real run would produce a
+# partial CSV that no other job can see. The cron is deliberately NOT enabled
+# until the CSV moves to Supabase; until then this is workflow_dispatch only.
+# See Phase 3 of the migration plan.
+
+name: smartlead-sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Sync replies from the last N days"
+        required: false
+        default: "14"
+        type: string
+      dry_run:
+        description: "Print stats only, write nothing (safe to run any time)"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  # Smartlead rate-limits per account, so a second concurrent run does not go
+  # faster -- it 429s the first one.
+  group: smartlead-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync replies
+        env:
+          SMARTLEAD_API_KEY: ${{ secrets.SMARTLEAD_API_KEY }}
+          # Point the script's data tree at the runner workspace instead of
+          # C:\Users\Devon\sos. Without this it tries to mkdir a Windows path.
+          SOS_ROOT: ${{ github.workspace }}/_state
+        run: |
+          python scripts/smartlead_sync.py \
+            --days "${{ github.event.inputs.days || '14' }}" \
+            ${{ github.event.inputs.dry_run != 'false' && '--dry-run' || '' }}
+
+      # Only meaningful on a non-dry run. Lets us eyeball what a real run would
+      # have written before wiring the CSV to Supabase.
+      - name: Upload the CSV it produced
+        if: github.event.inputs.dry_run == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: replies-log
+          path: _state/shared/data/smartlead/replies_log.csv
+          if-no-files-found: warn

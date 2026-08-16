@@ -1,0 +1,23 @@
+# Secrets -- glob, not just `.env`, so backups like .env.bak-2026-08-03 are
+# caught too. SOS had two 53-key backups sitting next to the live file.
+.env
+.env.*
+!.env.example
+*.key
+credentials.json
+google-service-account*.json
+
+# Job state and output. This repo is CODE ONLY -- no CSVs, no lead data.
+# SOS got into trouble because shared/data/ was never ignored and 71 files
+# of purchased lead PII ended up tracked.
+_state/
+data/
+out/
+*.csv
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

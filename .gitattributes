@@ -1,0 +1,5 @@
+# Authored on Windows, executed on ubuntu-latest runners. Normalise to LF in the
+# repo so a CRLF shebang line never reaches a Linux interpreter.
+* text=auto eol=lf
+*.png binary
+*.pdf binary

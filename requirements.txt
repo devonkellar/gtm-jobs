@@ -1,0 +1,6 @@
+# Derived from the actual imports in scripts/, not guessed.
+# Everything else these scripts use (csv, json, urllib, socket, ...) is stdlib.
+requests>=2.31
+gspread>=6.0
+google-auth>=2.28
+google-api-python-client>=2.120
