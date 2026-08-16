@@ -104,10 +104,39 @@ def _to_db_row(row: dict) -> dict:
     return out
 
 
+def _fmt_reply_date(val) -> str:
+    """
+    Postgres hands back '2026-08-14T19:58:00+00:00'; the CSV has
+    '2026-08-14 19:58' and every existing reader parses that shape. Same
+    instant either way, but a caller doing a string compare or a [:10] date
+    slice would silently disagree between backends. Normalise to the CSV form
+    so switching backend is invisible to the twenty readers.
+    """
+    if not val:
+        return ""
+    s = str(val).replace("T", " ")
+    for cut in ("+", "Z"):
+        i = s.find(cut)
+        if i > 0:
+            s = s[:i]
+    s = s.strip()
+    # One CSV row carries a date with no time ('2026-06-25'), which Postgres
+    # stores as midnight and hands back as '2026-06-25 00:00:00'. Render that
+    # back as the bare date so it round-trips to the value the CSV holds.
+    if s.endswith(" 00:00:00"):
+        return s[:10]
+    # trim seconds/microseconds: '2026-08-14 19:58:00' -> '2026-08-14 19:58'
+    if len(s) >= 16:
+        return s[:16]
+    return s
+
+
 def _to_csv_row(row: dict) -> dict:
     """Supabase row -> the exact 14-column CSV shape callers already parse."""
-    return {c: ("" if row.get(d) is None else str(row.get(d)))
-            for d, c in DB_TO_CSV.items()}
+    out = {c: ("" if row.get(d) is None else str(row.get(d)))
+           for d, c in DB_TO_CSV.items()}
+    out["reply_date"] = _fmt_reply_date(row.get("reply_date"))
+    return out
 
 
 def upsert(rows, chunk: int = 500) -> int:
@@ -116,7 +145,9 @@ def upsert(rows, chunk: int = 500) -> int:
         return 0
     payload = [_to_db_row(r) for r in rows]
     # Collapse duplicates inside this batch too -- Postgres rejects an ON
-    # CONFLICT that hits the same key twice in one statement.
+    # CONFLICT that hits the same key twice in one statement. The None here
+    # mirrors the coalesce(reply_date,'-infinity') in the DB index: undated
+    # status rows are one per campaign+lead, dated replies stay per-timestamp.
     seen, deduped = set(), []
     for r in payload:
         k = (r["campaign_id"], r["lead_email"], r["reply_date"])
@@ -134,6 +165,11 @@ def upsert(rows, chunk: int = 500) -> int:
             r = requests.post(
                 f"{SUPABASE_URL}/{TABLE}",
                 headers=h,
+                # PostgREST cannot target an EXPRESSION index (it rejects both
+                # the index name and the coalesce() text as a column), so the
+                # undated rows would fail here. Callers that need the upsert
+                # semantics of migration 002 use upsert_pg() instead; this path
+                # is kept for dated-only writes where the column list is valid.
                 params={"on_conflict": "campaign_id,lead_email,reply_date"},
                 json=batch,
                 timeout=120,
@@ -146,6 +182,74 @@ def upsert(rows, chunk: int = 500) -> int:
                     f"supabase {TABLE} -> {r.status_code}: {r.text[:400]}")
             time.sleep(2 * (attempt + 1))
     return sent
+
+
+def upsert_pg(rows, chunk: int = 1000) -> int:
+    """
+    Upsert via a direct Postgres connection.
+
+    Needed because the natural key from migration 002 is an EXPRESSION index
+    (coalesce(reply_date,'-infinity')) and PostgREST cannot name one as a
+    conflict target -- it only accepts a column list, which would let the 1,969
+    undated rows insert unbounded. Postgres itself takes the expression happily.
+
+    Requires SUPABASE_DB_PASSWORD (see secrets_util) and psycopg2.
+    """
+    if not rows:
+        return 0
+    import psycopg2
+    from psycopg2.extras import execute_values
+
+    payload = [_to_db_row(r) for r in rows]
+    seen, deduped = set(), []
+    for r in payload:
+        k = (r["campaign_id"], r["lead_email"], r["reply_date"])
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(r)
+
+    cols = list(CSV_TO_DB.values())
+    updatable = [c for c in cols
+                 if c not in ("campaign_id", "lead_email", "reply_date")]
+    set_clause = ", ".join(f"{c}=excluded.{c}" for c in updatable)
+    sql = (
+        f"insert into {TABLE} ({', '.join(cols)}) values %s "
+        f"on conflict (campaign_id, lead_email, "
+        f"(coalesce(reply_date, '-infinity'::timestamptz))) "
+        f"do update set {set_clause}, updated_at = now()"
+    )
+
+    try:
+        from secrets_util import get_secret
+        pw = os.environ.get("SUPABASE_DB_PASSWORD") or get_secret("SUPABASE_DB_PASSWORD")
+    except Exception:
+        pw = os.environ.get("SUPABASE_DB_PASSWORD")
+    if not pw:
+        raise RuntimeError("SUPABASE_DB_PASSWORD not set")
+
+    conn = psycopg2.connect(
+        host=f"db.{os.environ.get('SUPABASE_PROJECT_REF', 'mgonnoxpaqqcbtrkzmpf')}.supabase.co",
+        port=5432, user="postgres", dbname="postgres",
+        password=pw, connect_timeout=15, sslmode="require",
+    )
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            for i in range(0, len(deduped), chunk):
+                batch = deduped[i:i + chunk]
+                execute_values(
+                    cur, sql,
+                    [tuple(r[c] for c in cols) for r in batch],
+                    page_size=chunk,
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return len(deduped)
 
 
 def load_all() -> list:
@@ -184,13 +288,18 @@ def migrate_csv(dry_run: bool = False) -> dict:
     with io.open(p, encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
 
-    keys = {(r["campaign_id"], r["lead_email"], r["reply_date"]) for r in rows}
+    # Mirror the DB key exactly: blank date -> one row per campaign+lead.
+    keys = {(r["campaign_id"], r["lead_email"], (r["reply_date"] or "").strip())
+            for r in rows}
+    dated = sum(1 for r in rows if (r["reply_date"] or "").strip())
     stats = {"csv_rows": len(rows), "distinct_keys": len(keys),
-             "collapsed": len(rows) - len(keys)}
+             "collapsed": len(rows) - len(keys),
+             "dated": dated, "undated": len(rows) - dated}
     if dry_run:
         stats["written"] = 0
         return stats
-    stats["written"] = upsert(rows)
+    # upsert_pg, not upsert: the natural key is an expression index.
+    stats["written"] = upsert_pg(rows)
     return stats
 
 
@@ -199,6 +308,8 @@ if __name__ == "__main__":
     if "--migrate" in sys.argv:
         s = migrate_csv(dry_run=dry)
         print(f"csv rows        : {s['csv_rows']}")
+        print(f"  dated (events): {s['dated']}")
+        print(f"  undated (status): {s['undated']}")
         print(f"distinct keys   : {s['distinct_keys']}")
         print(f"collapsed dupes : {s['collapsed']}")
         print(f"written         : {s['written']}{' (dry run)' if dry else ''}")
