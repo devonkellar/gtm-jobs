@@ -25,6 +25,7 @@ from pathlib import Path
 from html.parser import HTMLParser
 
 # ── Config ────────────────────────────────────────────────────────────────────
+import replies_store
 from secrets_util import get_secret
 
 API_KEY   = get_secret("SMARTLEAD_API_KEY")
@@ -419,11 +420,30 @@ def main():
         print("\n[DRY RUN] No file written.")
         return
 
-    # Append new rows then rewrite full file sorted desc
+    # Supabase first. On a CI runner the CSV is written to a workspace that is
+    # discarded at the end of the job, so the database is the only durable
+    # target -- but the laptop still wants the file, and during the migration
+    # both are written so neither side goes stale. REPLIES_BACKEND=csv opts out.
+    if replies_store.backend() == "supabase":
+        try:
+            n = replies_store.upsert(new_rows)
+            print(f"Supabase: upserted {n} rows into campaign_replies")
+        except Exception as exc:
+            # Do not lose the pull because the DB was unreachable -- fall
+            # through to the CSV write and exit non-zero so the run goes red
+            # rather than reporting a success that stored nothing.
+            print(f"[FAIL] supabase upsert: {exc}", file=sys.stderr)
+            _write_csv(new_rows, existing_rows)
+            sys.exit(1)
+
+    _write_csv(new_rows, existing_rows)
+
+
+def _write_csv(new_rows, existing_rows):
+    """Rewrite the whole CSV, newest first. The laptop's system of record."""
     all_combined = new_rows + existing_rows
     all_combined.sort(key=lambda r: r.get("reply_date") or "", reverse=True)
 
-    write_header = not CSV_FILE.exists() or len(existing_rows) == 0
     with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
         writer.writeheader()
