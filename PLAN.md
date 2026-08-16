@@ -52,12 +52,24 @@ is and is not part of this site.
 
 Free tier or it does not ship.
 
-- **GitHub Actions** -- 2,000 min/mo on private repos. Running everything daily
-  costs ~1,996, which is not a budget, it is a coin flip: Actions rounds every
-  run up to a whole minute, so one retry tips it into paid. Two jobs are over
-  half the bill (CampaignArchive 510, InstallSuppression 510). **Open decision:**
-  make this repo public (unlimited minutes, code becomes readable) or drop those
-  two to weekly (~1,163 min, 837 headroom). Nothing ships until this is settled.
+- **GitHub Actions** -- **SETTLED 2026-08-16: this repo is PUBLIC**, which makes
+  Actions minutes unlimited and free, permanently. Private would have cost ~1,996
+  of 2,000 minutes for a daily schedule -- not a budget, a coin flip, since
+  Actions rounds every run up to a whole minute and one retry tips it into paid
+  (CampaignArchive and InstallSuppression are 510 each). Railway was priced as
+  the alternative and rejected: its free tier is $1/mo of credit, the realistic
+  plan is Hobby at **$5/mo minimum**, and our whole workload is ~$2.50/mo of
+  compute -- paying a floor for less usage than it covers.
+
+  **What public means in practice.** No credentials are in the repo: every key is
+  a GitHub Secret, `.gitignore` blocks `.env*`, `*.csv` and `_state/`, and the
+  full history was scanned for token shapes before the switch. Two real prospect
+  email addresses had been used as worked examples in a comment and a docstring;
+  those were scrubbed from files AND from commit messages with filter-branch, the
+  backup refs dropped and the objects gc'd, verified zero across every commit.
+  **The standing rule: this repo is world-readable. No key, no lead, no client
+  name, no third party's email goes in it -- not in code, not in a commit
+  message.** What IS public is the job logic, which is the accepted trade.
 - **Supabase** -- 500 MB. Replies at ~1.9 KB/row; even 10x growth is ~85 MB.
 - **Cloudflare Pages** -- free, unlimited bandwidth. Already hosting
   dk-morning-brief.
@@ -74,7 +86,7 @@ sync with.
 
 ## Order of work
 
-1. Settle the Actions cost decision (blocks everything)
+1. ~~Settle the Actions cost decision~~ **done -- public repo, unlimited free**
 2. Move `campaign_replies` to the freelance Supabase, unfiltered
 3. Backfill the 14 missing people into Attio, then delete the allowlists
 4. Build the reporting site, replies page first
