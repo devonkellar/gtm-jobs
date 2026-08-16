@@ -39,6 +39,8 @@ from pathlib import Path
 
 import gspread
 import requests
+
+import replies_store
 from google.oauth2.service_account import Credentials
 
 # Single source of truth for "what do the numbers say" (merge completed 2026-07-28).
@@ -253,11 +255,9 @@ def load_positive_replies_by_campaign(through_date=None):
     first positive reply came before the window is never re-counted inside it.
     """
     counts = defaultdict(int)
-    if not REPLIES_CSV.exists():
+    rows = replies_store.load_all()
+    if not rows:
         return counts
-
-    with open(REPLIES_CSV, "r", encoding="utf-8", newline="") as f:
-        rows = list(csv.DictReader(f))
 
     # every positive reply ever, oldest first, so "first" means first
     pos = []

@@ -24,6 +24,8 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import replies_store
+
 SOS_ROOT  = Path(r"C:\Users\Devon\sos")
 DATA_DIR  = SOS_ROOT / "shared" / "data" / "smartlead"
 REPLIES_CSV   = DATA_DIR / "replies_log.csv"
@@ -42,24 +44,20 @@ REPORT_HEADERS = [
 
 def load_replies(since_date=None):
     """Returns dict: reply_to_email -> {count, last_date, categories}"""
-    if not REPLIES_CSV.exists():
-        return {}
-
     by_account = defaultdict(lambda: {"count": 0, "last_date": "", "categories": set()})
-    with open(REPLIES_CSV, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            rt = row.get("reply_to", "").strip().lower()
-            if not rt:
-                continue
-            rd = row.get("reply_date", "")
-            if since_date and rd and rd[:10] < since_date:
-                continue
-            by_account[rt]["count"] += 1
-            if rd > by_account[rt]["last_date"]:
-                by_account[rt]["last_date"] = rd[:10] if rd else ""
-            cat = row.get("lead_category", "")
-            if cat:
-                by_account[rt]["categories"].add(cat)
+    for row in replies_store.load_all():
+        rt = (row.get("reply_to") or "").strip().lower()
+        if not rt:
+            continue
+        rd = row.get("reply_date") or ""
+        if since_date and rd and rd[:10] < since_date:
+            continue
+        by_account[rt]["count"] += 1
+        if rd > by_account[rt]["last_date"]:
+            by_account[rt]["last_date"] = rd[:10] if rd else ""
+        cat = row.get("lead_category") or ""
+        if cat:
+            by_account[rt]["categories"].add(cat)
     return by_account
 
 

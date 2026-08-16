@@ -37,6 +37,8 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import replies_store
+
 import requests
 
 from secrets_util import get_secret
@@ -117,11 +119,9 @@ def load_replies(ws, we):
     """
     positives = defaultdict(list)
     reply_counts = defaultdict(int)
-    if not REPLIES_CSV.exists():
+    rows = replies_store.load_all()
+    if not rows:
         return positives, reply_counts
-
-    with open(REPLIES_CSV, encoding="utf-8", errors="replace") as fh:
-        rows = list(csv.DictReader(fh))
 
     # all replies (any category) in-window, for the reply-rate denominator
     for row in rows:
@@ -319,10 +319,9 @@ def lifetime_new_leads_by_campaign():
     people had already replied to something else.
     """
     counts = defaultdict(int)
-    if not REPLIES_CSV.exists():
+    rows = replies_store.load_all()
+    if not rows:
         return counts
-    with open(REPLIES_CSV, encoding="utf-8", errors="replace") as fh:
-        rows = list(csv.DictReader(fh))
     pos = [(parse_day(r.get("reply_date")), r) for r in rows
            if (r.get("lead_category") or "").strip() in POSITIVE]
     pos = sorted([(d, r) for d, r in pos if d], key=lambda t: t[0])

@@ -17,9 +17,20 @@ Deliberately not a hard switch: during the migration the laptop keeps writing
 the CSV while CI writes Supabase, and both must work from the same file.
 
 DEDUP
-Upsert key is (campaign_id, lead_email, reply_date) -- see
-migrations/001_campaign_replies.sql for why it is not campaign_lead_map_id
-(4,596 rows, 2,276 distinct map_ids, 197 blank).
+Upsert key is (campaign_id, lead_email, coalesce(reply_date,'-infinity')) --
+see migrations/001 and 002 for why it is neither campaign_lead_map_id nor a
+plain column list.
+
+A KNOWN, DELIBERATE NUMBERS CHANGE
+Supabase reports slightly FEWER replies than the CSV, and that is the CSV being
+wrong. 46 dated keys in the file carry more than one row -- always a real
+category paired with a shadow 'Uncategorized' banked at the same second, e.g.
+one lead in campaign 3715170 at 2026-08-05 09:46 appears as both
+'Not Interested' and 'Uncategorized'. The CSV counts that reply twice.
+
+Across the file that inflates the raw reply count by 50. Anything reading
+through this module will therefore show a handful fewer replies than the old
+CSV path did. Verified case by case; it is dedup, not data loss.
 """
 
 import csv
