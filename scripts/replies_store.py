@@ -42,8 +42,26 @@ from pathlib import Path
 
 import requests
 
-SUPABASE_URL = "https://mgonnoxpaqqcbtrkzmpf.supabase.co/rest/v1"
+# The REPORTING project (Devon's own), not Smartbound's.
+#
+# Smartbound's project sits at 454 MB of the 500 MB free tier, 220 MB of which is
+# apollo_calls -- and that cannot move: ten live client trial portals on
+# reporting.smartbound.ai read it, three of them active. This project was at
+# 53 MB with 447 MB free, so the reply log and everything the reporting site
+# needs lives here instead. Call reporting stays where it is and is not part of
+# this system.
+#
+# Override with REPORTING_SUPABASE_REF if the project ever changes.
+PROJECT_REF = os.environ.get("REPORTING_SUPABASE_REF", "ddpxbmsiiwtjjpsguege")
+SUPABASE_URL = f"https://{PROJECT_REF}.supabase.co/rest/v1"
 TABLE = "campaign_replies"
+
+# Credentials are looked up under the REPORTING_ names first (what CI sets and
+# what the freelance .env uses) and fall back to the older bare names.
+KEY_NAMES = ("REPORTING_SUPABASE_SERVICE_KEY", "HIRING_SUPABASE_SERVICE_KEY",
+             "SUPABASE_SERVICE_KEY")
+PW_NAMES = ("REPORTING_SUPABASE_DB_PASSWORD", "HIRING_SUPABASE_DB_PASSWORD",
+            "SUPABASE_DB_PASSWORD")
 
 # Same 14 columns as the CSV, in order. CSV name -> Supabase column.
 CSV_TO_DB = {
@@ -75,22 +93,59 @@ def csv_path() -> Path:
     return _sos_root() / "shared" / "data" / "smartlead" / "replies_log.csv"
 
 
+def _freelance_env() -> dict:
+    """
+    Parse the freelance repo's .env. That is where the reporting project's
+    credentials live on the laptop (HIRING_SUPABASE_*), and it is a different
+    file from the SOS .env that secrets_util reads.
+    """
+    path = Path(os.environ.get(
+        "FREELANCE_ENV",
+        r"C:\Users\Devon\devon-kellar-freelance\.env"))
+    out = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass  # absent in CI, where everything comes from the environment
+    return out
+
+
+def _cred(names, required=True) -> str:
+    """First hit across env -> freelance .env -> SOS .env, in name order."""
+    for n in names:
+        if os.environ.get(n):
+            return os.environ[n]
+    fe = _freelance_env()
+    for n in names:
+        if fe.get(n):
+            return fe[n]
+    try:
+        from secrets_util import get_secret
+        for n in names:
+            v = get_secret(n, required=False)
+            if v:
+                return v
+    except Exception:
+        pass
+    if required:
+        raise RuntimeError(f"none of {names} is set")
+    return ""
+
+
 def backend() -> str:
     b = (os.environ.get("REPLIES_BACKEND") or "").strip().lower()
     if b in ("supabase", "csv"):
         return b
-    return "supabase" if os.environ.get("SUPABASE_SERVICE_KEY") else "csv"
+    return "supabase" if _cred(KEY_NAMES, required=False) else "csv"
 
 
 def _headers() -> dict:
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not key:
-        # Fall back to the shared .env so the laptop works without exporting.
-        try:
-            from secrets_util import get_secret
-            key = get_secret("SUPABASE_SERVICE_KEY")
-        except Exception:
-            raise RuntimeError("SUPABASE_SERVICE_KEY not set")
+    key = _cred(KEY_NAMES)
     return {
         "apikey": key,
         "Authorization": f"Bearer {key}",
@@ -231,18 +286,10 @@ def upsert_pg(rows, chunk: int = 1000) -> int:
         f"do update set {set_clause}, updated_at = now()"
     )
 
-    try:
-        from secrets_util import get_secret
-        pw = os.environ.get("SUPABASE_DB_PASSWORD") or get_secret("SUPABASE_DB_PASSWORD")
-    except Exception:
-        pw = os.environ.get("SUPABASE_DB_PASSWORD")
-    if not pw:
-        raise RuntimeError("SUPABASE_DB_PASSWORD not set")
-
     conn = psycopg2.connect(
-        host=f"db.{os.environ.get('SUPABASE_PROJECT_REF', 'mgonnoxpaqqcbtrkzmpf')}.supabase.co",
+        host=f"db.{PROJECT_REF}.supabase.co",
         port=5432, user="postgres", dbname="postgres",
-        password=pw, connect_timeout=15, sslmode="require",
+        password=_cred(PW_NAMES), connect_timeout=15, sslmode="require",
     )
     conn.autocommit = False
     try:
