@@ -1,0 +1,94 @@
+# Rebuild and publish the GTM reporting site.
+#
+# WHY THIS IS THE FIRST JOB WITH A CRON
+# Every other job in this repo writes state that a stateless runner cannot keep
+# (replies_log.csv, sync ledgers), which is why smartlead-sync.yml is still
+# workflow_dispatch only. This job is different: it READS Supabase and WRITES a
+# static page to Cloudflare. It owns no local state, so a runner that is wiped
+# after every run is exactly the right place for it -- there is nothing to lose.
+#
+# WHAT IT REPLACES
+# A page that only refreshed when someone ran deploy_site.py by hand. It said
+# "live from Supabase" while being a manual snapshot, which is the worse kind of
+# wrong: stale AND trusted.
+#
+# COST
+# Public repo, so Actions minutes are unlimited and free. Runtime is ~40s.
+
+name: reporting-site
+
+on:
+  schedule:
+    # 06:10 UTC = 14:10 KL. After the morning Smartlead syncs (08:00/08:15 KL)
+    # have landed the day's replies, so the page reflects them same-day.
+    - cron: "10 6 * * *"
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Publish to Cloudflare (false = build only, no publish)"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  # Two concurrent deploys race for the same Pages production deployment.
+  group: reporting-site
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # No-op on the runner (the freelance repo is not checked out here), but
+      # kept so the drift check is part of the pipeline's definition rather
+      # than something only the laptop remembers to run.
+      - name: Check the vendored build script has not drifted
+        run: python reporting/check_vendored.py
+
+      - name: Build the page
+        env:
+          REPLIES_BACKEND: supabase
+          REPORTING_SUPABASE_SERVICE_KEY: ${{ secrets.REPORTING_SUPABASE_SERVICE_KEY }}
+          GTM_JOBS_SCRIPTS: ${{ github.workspace }}/scripts
+        run: python reporting/build_site.py
+
+      # A build that "succeeds" but emits a shell with no data would otherwise
+      # publish over a good page. Fail here instead of deploying the damage.
+      - name: Verify the page actually has data
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          p = pathlib.Path("reporting/out/index.html")
+          if not p.exists():
+              sys.exit("[FAIL] no page produced")
+          h = p.read_text(encoding="utf-8")
+          i = h.find("var DATA=")
+          if i < 0:
+              sys.exit("[FAIL] page carries no data payload")
+          d, _ = json.JSONDecoder().raw_decode(h[i + len("var DATA="):])
+          if len(d) < 100:
+              sys.exit(f"[FAIL] only {len(d)} records - refusing to publish")
+          pos = sum(1 for r in d if r.get("pos"))
+          print(f"[OK] {len(d)} records, {pos} positive, {p.stat().st_size//1024} KB")
+          PY
+
+      - name: Publish to Cloudflare Pages
+        if: github.event_name == 'schedule' || github.event.inputs.deploy != 'false'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          printf '/*\n  Cache-Control: no-cache, must-revalidate\n  X-Robots-Tag: noindex, nofollow\n' \
+            > reporting/out/_headers
+          npx --yes wrangler@4 pages deploy reporting/out \
+            --project-name dk-gtm-reporting --branch main --commit-dirty=true
