@@ -80,7 +80,7 @@ That is why **no workflow here has a `schedule:` trigger yet** -- they are
 
 | Job | Ported | Cron on | Notes |
 |---|---|---|---|
-| smartlead-sync | yes | **no** | The CSV producer. Blocked on the Supabase move. |
+| smartlead-sync | yes | **no** | **Verified in Actions 2026-08-16: success in 6m15s**, 33 campaigns, live reply counts, `--dry-run`. The CSV producer, so the cron is blocked on the Supabase move. |
 | smartlead-campaign-stats | not yet | no | |
 | smartlead-account-stats | not yet | no | |
 | smartlead-deliverability | not yet | no | |
