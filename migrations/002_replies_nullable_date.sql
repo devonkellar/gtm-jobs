@@ -10,9 +10,9 @@
 -- The file holds two different kinds of record under one header:
 --
 --   1. Reply EVENTS (2,627 rows, all dated) -- a real inbound message. One lead
---      can send many: one lead has 12 in campaign 3509953, same
---      campaign_lead_map_id, different timestamps and bodies. A genuine thread.
---      So map_id is a CONVERSATION id, never a reply id.
+--      can send many: the worst case in the file is one lead with 12 replies in
+--      a single campaign, same campaign_lead_map_id, different timestamps and
+--      bodies. A genuine thread. So map_id is a CONVERSATION id, never a reply id.
 --
 --   2. Lead STATUS records (1,969 rows, never dated, 106 with any body) -- the
 --      lead's current category: Out Of Office (976), Bounce (311), Not

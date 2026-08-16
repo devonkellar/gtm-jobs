@@ -24,9 +24,9 @@ plain column list.
 A KNOWN, DELIBERATE NUMBERS CHANGE
 Supabase reports slightly FEWER replies than the CSV, and that is the CSV being
 wrong. 46 dated keys in the file carry more than one row -- always a real
-category paired with a shadow 'Uncategorized' banked at the same second, e.g.
-one lead in campaign 3715170 at 2026-08-05 09:46 appears as both
-'Not Interested' and 'Uncategorized'. The CSV counts that reply twice.
+category paired with a shadow 'Uncategorized' banked at the same second. One
+lead's reply at 2026-08-05 09:46, for instance, appears as both 'Not Interested'
+and 'Uncategorized'. The CSV counts that reply twice.
 
 Across the file that inflates the raw reply count by 50. Anything reading
 through this module will therefore show a handful fewer replies than the old
