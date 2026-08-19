@@ -70,6 +70,11 @@ jobs:
           # never needed a database credential. A real run does.
           REPLIES_BACKEND: supabase
           REPORTING_SUPABASE_SERVICE_KEY: ${{ secrets.REPORTING_SUPABASE_SERVICE_KEY }}
+          # The upsert goes over a direct Postgres connection (expression
+          # index -- PostgREST returns 42P10), so it needs the DB password
+          # as well as the REST service key. A repo secret is not visible
+          # to a step unless it is named here.
+          REPORTING_SUPABASE_DB_PASSWORD: ${{ secrets.REPORTING_SUPABASE_DB_PASSWORD }}
           # SOS_ROOT no longer points at anything the job writes; kept because
           # the module still derives DATA_DIR from it at import time.
           SOS_ROOT: ${{ github.workspace }}/_state
