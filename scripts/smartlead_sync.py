@@ -426,7 +426,13 @@ def main():
     # No try/except: a failed upsert must fail the run. There is no second
     # target to fall back to, and a green run that stored nothing is exactly
     # the failure this migration exists to remove.
-    n = replies_store.upsert(new_rows)
+    # upsert_pg, NOT upsert. The natural key is an expression index
+    # (coalesce(reply_date,'-infinity') -- migration 002) and PostgREST cannot
+    # name an expression index as an ON CONFLICT target: the REST path returns
+    # 42P10 for every batch. Postgres itself takes the expression happily, so
+    # the direct connection is the only route that works. migrate_csv() already
+    # uses it for the same reason.
+    n = replies_store.upsert_pg(new_rows)
     print(f"Supabase: upserted {n} rows into campaign_replies")
     print(f"New rows added: {len(new_rows)}")
     print(f"Total rows: {len(existing_rows) + len(new_rows)}")

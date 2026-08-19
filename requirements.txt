@@ -7,3 +7,6 @@ google-api-python-client>=2.120
 # The vendored deliverability set (reporting/deliverability/) loads a local
 # .env on the laptop; absent in CI, where load_dotenv is a harmless no-op.
 python-dotenv>=1.0
+# The reply upsert goes through a direct Postgres connection: the natural
+# key is an expression index and PostgREST cannot target one (42P10).
+psycopg2-binary>=2.9
