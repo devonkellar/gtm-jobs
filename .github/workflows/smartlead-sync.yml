@@ -10,17 +10,26 @@
 # reasoning as hiring-pull.yml: this is minutes of API calls, not a long-running
 # worker, so the ceiling is irrelevant and a cron trigger is the whole runtime.
 #
-# STATE WARNING -- READ BEFORE ENABLING THE CRON
-# The script still writes replies_log.csv to disk. A CI runner is stateless, so
-# the file starts empty every run and is thrown away at the end. That is fine
-# for --dry-run (which writes nothing) but means a real run would produce a
-# partial CSV that no other job can see. The cron is deliberately NOT enabled
-# until the CSV moves to Supabase; until then this is workflow_dispatch only.
-# See Phase 3 of the migration plan.
+# STATE: NONE. Cron enabled 2026-08-19.
+# The CSV write is gone. The job reads its dedup set from Supabase and upserts
+# back into it, so it holds nothing on disk between runs and a stateless runner
+# is exactly the right place for it. Every reader was cut over first -- the
+# three superseded SOS copies that still open the file carry a DO-NOT-RUN
+# banner, and nothing on a schedule touches it.
+#
+# WHY THE DEDUP SET MOVED TOO. It used to be built by reading replies_log.csv.
+# On a runner that file does not exist, so every reply would have looked new on
+# every run: the upsert keeps the data correct, but "New rows added" becomes
+# the total row count and the log stops meaning anything.
 
 name: smartlead-sync
 
 on:
+  schedule:
+    # 05:30 UTC = 13:30 KL. Must finish before reporting-site (06:10 UTC) reads
+    # campaign_replies, or the page publishes without the day's replies.
+    # Measured runtime is ~10-20 min, so this leaves ~40 minutes of headroom.
+    - cron: "30 5 * * *"
   workflow_dispatch:
     inputs:
       days:
@@ -57,20 +66,14 @@ jobs:
       - name: Sync replies
         env:
           SMARTLEAD_API_KEY: ${{ secrets.SMARTLEAD_API_KEY }}
-          # Point the script's data tree at the runner workspace instead of
-          # C:\Users\Devon\sos. Without this it tries to mkdir a Windows path.
+          # The job only ever ran --dry-run before, which writes nothing, so it
+          # never needed a database credential. A real run does.
+          REPLIES_BACKEND: supabase
+          REPORTING_SUPABASE_SERVICE_KEY: ${{ secrets.REPORTING_SUPABASE_SERVICE_KEY }}
+          # SOS_ROOT no longer points at anything the job writes; kept because
+          # the module still derives DATA_DIR from it at import time.
           SOS_ROOT: ${{ github.workspace }}/_state
         run: |
           python scripts/smartlead_sync.py \
             --days "${{ github.event.inputs.days || '14' }}" \
-            ${{ github.event.inputs.dry_run != 'false' && '--dry-run' || '' }}
-
-      # Only meaningful on a non-dry run. Lets us eyeball what a real run would
-      # have written before wiring the CSV to Supabase.
-      - name: Upload the CSV it produced
-        if: github.event.inputs.dry_run == 'false'
-        uses: actions/upload-artifact@v4
-        with:
-          name: replies-log
-          path: _state/shared/data/smartlead/replies_log.csv
-          if-no-files-found: warn
+            ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false') && '--dry-run' || '' }}

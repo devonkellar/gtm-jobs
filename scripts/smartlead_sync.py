@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Smartlead → SOS reply sync
-Pulls all replies across all campaigns and saves to replies_log.csv.
+Pulls all replies across all campaigns and upserts them into the
+`campaign_replies` table in Supabase. Writes no files.
 
 Usage:
     python smartlead_sync.py              # sync last 365 days (default)
@@ -13,7 +14,6 @@ Output:
     C:/Users/Devon/sos/shared/data/smartlead/replies_log.csv
 """
 
-import csv
 import os
 import re
 import sys
@@ -35,14 +35,7 @@ BASE_URL  = "https://server.smartlead.ai/api/v1"
 # checkout). Same convention as secrets_util.get_secret.
 SOS_ROOT  = Path(os.environ.get("SOS_ROOT", r"C:\Users\Devon\sos"))
 DATA_DIR  = SOS_ROOT / "shared" / "data" / "smartlead"
-CSV_FILE  = DATA_DIR / "replies_log.csv"
 
-CSV_HEADERS = [
-    "reply_date", "campaign_id", "campaign_name", "campaign_status",
-    "lead_email", "lead_first_name", "lead_last_name", "lead_company",
-    "lead_category", "reply_body", "reply_from", "reply_to",
-    "lead_id", "campaign_lead_map_id",
-]
 
 # Smartlead default category IDs (from /leads/fetch-categories)
 CATEGORY_NAMES = {
@@ -240,7 +233,6 @@ def main():
     else:
         print("Syncing all replies (no date filter)")
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. Get all campaigns
     print("\nFetching campaign list...")
@@ -391,15 +383,19 @@ def main():
                 "campaign_lead_map_id": clm_id,
             })
 
-    # Load existing rows and build seen set for dedup
+    # Build the dedup set from the reply store.
     # Key: (campaign_lead_map_id, reply_from, reply_date)
-    existing_rows = []
-    seen = set()
-    if CSV_FILE.exists():
-        with open(CSV_FILE, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                existing_rows.append(row)
-                seen.add((row["campaign_lead_map_id"], row["reply_from"], row["reply_date"]))
+    #
+    # This used to read replies_log.csv. A CI runner has no such file, so every
+    # reply looked new on every run: the upsert still stored the right data, but
+    # "New rows added" became the total row count and the log stopped meaning
+    # anything. Reading the set from the same place we write to is what lets
+    # this job run anywhere.
+    existing_rows = replies_store.load_all()
+    seen = {(str(r.get("campaign_lead_map_id") or ""),
+             r.get("reply_from") or "",
+             r.get("reply_date") or "")
+            for r in existing_rows}
 
     # Filter to genuinely new rows
     new_rows = []
@@ -420,39 +416,20 @@ def main():
         print("\n[DRY RUN] No file written.")
         return
 
-    # Supabase first. On a CI runner the CSV is written to a workspace that is
-    # discarded at the end of the job, so the database is the only durable
-    # target -- but the laptop still wants the file, and during the migration
-    # both are written so neither side goes stale. REPLIES_BACKEND=csv opts out.
-    if replies_store.backend() == "supabase":
-        try:
-            n = replies_store.upsert(new_rows)
-            print(f"Supabase: upserted {n} rows into campaign_replies")
-        except Exception as exc:
-            # Do not lose the pull because the DB was unreachable -- fall
-            # through to the CSV write and exit non-zero so the run goes red
-            # rather than reporting a success that stored nothing.
-            print(f"[FAIL] supabase upsert: {exc}", file=sys.stderr)
-            _write_csv(new_rows, existing_rows)
-            sys.exit(1)
-
-    _write_csv(new_rows, existing_rows)
-
-
-def _write_csv(new_rows, existing_rows):
-    """Rewrite the whole CSV, newest first. The laptop's system of record."""
-    all_combined = new_rows + existing_rows
-    all_combined.sort(key=lambda r: r.get("reply_date") or "", reverse=True)
-
-    with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-        writer.writerows(all_combined)
-
+    # Supabase is the only target now. The CSV write was dropped on 2026-08-19
+    # once nothing read the file any more -- every reader was cut over to
+    # replies_store first, and the three superseded copies that still open it
+    # carry a DO-NOT-RUN banner. Writing it was the last thing that made this
+    # job need a filesystem, and therefore the last thing keeping it on the
+    # laptop.
+    #
+    # No try/except: a failed upsert must fail the run. There is no second
+    # target to fall back to, and a green run that stored nothing is exactly
+    # the failure this migration exists to remove.
+    n = replies_store.upsert(new_rows)
+    print(f"Supabase: upserted {n} rows into campaign_replies")
     print(f"New rows added: {len(new_rows)}")
-    print(f"Total rows: {len(all_combined)}")
-    print(f"Saved: {CSV_FILE}")
-    print(f"Size: {CSV_FILE.stat().st_size / 1024:.1f} KB")
+    print(f"Total rows: {len(existing_rows) + len(new_rows)}")
 
 
 if __name__ == "__main__":

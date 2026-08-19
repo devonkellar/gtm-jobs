@@ -91,6 +91,36 @@ sync with.
 3. Backfill the 14 missing people into Attio, then delete the allowlists
 4. Build the reporting site, replies page first
 5. Migrate the jobs, cron on only once their readers are cloud-side
+   - **smartlead-sync: DONE 2026-08-19.** Every reader cut over to
+     `replies_store`, the CSV write dropped, the dedup set moved to Supabase,
+     cron enabled at 05:30 UTC (before reporting-site at 06:10). The job now
+     holds nothing on disk. First job fully off the laptop.
+
+## The trap this hit, 2026-08-19
+
+**A job can be green, on time, and writing to the wrong place.**
+
+`smartlead_sync.py` exists twice. The gtm-jobs copy dual-writes Supabase then
+the CSV; the SOS copy only writes the CSV. `SOS\SmartleadSync` ran the SOS
+copy, so `campaign_replies` quietly stopped growing on **14 August** -- 4,545
+rows against the CSV's 4,668 -- while `reporting-site` kept publishing green
+every morning off five-day-old data. Nothing was broken. Nothing alarmed.
+
+Fixed by pointing the laptop wrapper at the gtm-jobs copy, so the machine that
+still owns the schedule writes to both. The CSV path is unchanged, so all 27
+CSV readers carry on working.
+
+**The rule this gives us:** when a job exists in both trees, the laptop must run
+the *cloud* copy from the moment that copy is the better one. Otherwise the
+cloud target rots invisibly and the migration's own progress hides it.
+
+Same shape, same day, twice more: `assert_statuses` was added to the vendored
+`attio_client.py` and not the original (install sync dead 3 days, 27 people
+missing from the CRM), and `build_site.py`'s vendored copy fell a revision
+behind -- CI would have deleted the live `/deliverability` page on its next
+run. `reporting/check_vendored.py` now covers the pairs that must match, and
+the reporting workflow refuses to publish a site missing a page its nav links
+to.
 
 ## Still true from the original plan
 
@@ -98,4 +128,10 @@ sync with.
   The seam (`scripts/replies_store.py`) exists and is verified; the remaining
   readers still point at the CSV and are being left alone for now.
 - The laptop stays the system of record until a job's readers are all cloud-side.
-- FathomSync and FinanceDaily stay on the laptop deliberately.
+- FinanceDaily stays on the laptop deliberately (ADR-0012).
+- **FathomSync is no longer a permanent exception.** It was excluded because it
+  writes transcripts into the local SOS tree and three things read them from
+  disk -- the same file-is-the-interface problem as `replies_log.csv`, not a
+  privacy rule. Devon confirmed on 2026-08-19 that the transcripts can live in
+  Supabase, so it needs a seam like `replies_store.py` and then it migrates.
+  Three readers, not twenty-seven: it is the easier of the two.
