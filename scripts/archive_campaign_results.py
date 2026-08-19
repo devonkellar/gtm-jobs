@@ -42,10 +42,23 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 import time
 from datetime import datetime, timezone
 
 import requests
+
+# The reply log lives in Supabase now; this is the same lookup the other
+# migrated jobs use. Falls back to the known path when the env var is unset.
+for _cand in (Path(os.environ.get("GTM_JOBS_SCRIPTS", "")),
+              Path(__file__).resolve().parent,
+              Path(r"C:\Users\Devon\gtm-jobs\scripts")):
+    if _cand and (_cand / "replies_store.py").exists():
+        sys.path.insert(0, str(_cand))
+        break
+else:
+    sys.exit("[FAIL] cannot find replies_store.py - set GTM_JOBS_SCRIPTS")
+import replies_store  # noqa: E402
 
 BASE = "https://server.smartlead.ai/api/v1"
 SUPABASE_URL = "https://mgonnoxpaqqcbtrkzmpf.supabase.co/rest/v1"
@@ -245,15 +258,18 @@ def sb_upsert(table, rows, conflict, chunk=500):
 
 
 def load_replies_log():
-    """campaign_id -> reply rows, for backfilling deleted campaigns."""
+    """campaign_id -> reply rows, for backfilling deleted campaigns.
+
+    Reads Supabase through the gtm-jobs seam, not replies_log.csv. This is
+    the only record of what a campaign deleted from Smartlead produced, so
+    it has to read the same source as everything else -- against the CSV it
+    would archive a dead campaign from a log that had stopped updating.
+    """
     by_campaign = {}
-    if not os.path.exists(REPLIES_LOG):
-        return by_campaign
-    with open(REPLIES_LOG, encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            cid = (row.get("campaign_id") or "").strip()
-            if cid:
-                by_campaign.setdefault(cid, []).append(row)
+    for row in replies_store.load_all():
+        cid = str(row.get("campaign_id") or "").strip()
+        if cid:
+            by_campaign.setdefault(cid, []).append(row)
     return by_campaign
 
 
