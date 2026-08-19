@@ -286,11 +286,39 @@ def upsert_pg(rows, chunk: int = 1000) -> int:
         f"do update set {set_clause}, updated_at = now()"
     )
 
-    conn = psycopg2.connect(
-        host=f"db.{PROJECT_REF}.supabase.co",
-        port=5432, user="postgres", dbname="postgres",
-        password=_cred(PW_NAMES), connect_timeout=15, sslmode="require",
-    )
+    # db.<ref>.supabase.co NO LONGER RESOLVES. Supabase retired IPv4 on the
+    # direct-connection host, so it is an NXDOMAIN from here and migrate_csv()
+    # died on it -- which is why the CSV -> Supabase backfill silently stopped
+    # being runnable and the reporting site went five days stale.
+    #
+    # The session pooler is the supported replacement. It takes a different
+    # username shape (postgres.<ref>, not postgres) and lives in the project's
+    # own region, so the host is not derivable from the ref alone. Override
+    # with SUPABASE_POOLER_HOST if the project ever moves.
+    pooler_host = os.environ.get(
+        "SUPABASE_POOLER_HOST", "aws-0-us-east-2.pooler.supabase.com")
+    attempts = [
+        (pooler_host, 5432, f"postgres.{PROJECT_REF}"),
+        # Kept last so an environment that still has direct access uses it.
+        (f"db.{PROJECT_REF}.supabase.co", 5432, "postgres"),
+    ]
+    conn, errors = None, []
+    for host, port, user in attempts:
+        try:
+            conn = psycopg2.connect(
+                host=host, port=port, user=user, dbname="postgres",
+                password=_cred(PW_NAMES), connect_timeout=15, sslmode="require",
+            )
+            break
+        except psycopg2.OperationalError as exc:
+            errors.append(f"{host}:{port} as {user} -> {str(exc).strip()[:120]}")
+    if conn is None:
+        raise RuntimeError(
+            "no Postgres route to the reporting project. Tried:\n  "
+            + "\n  ".join(errors)
+            + "\nSet SUPABASE_POOLER_HOST to the project's pooler host "
+              "(Supabase dashboard -> Connect -> Session pooler)."
+        )
     conn.autocommit = False
     try:
         with conn.cursor() as cur:
