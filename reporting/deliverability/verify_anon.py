@@ -55,7 +55,11 @@ def main():
             fails.append(f"{label} {detail}")
 
     # ---- must be able to READ what the page draws --------------------------
-    for table in ("domains", "domain_checks", "domain_health"):
+    # domain_placement_latest joined the page on 2026-08-19. A view is DROPped and
+    # recreated by a schema re-apply, which takes its grants with it -- so every
+    # relation the page reads is asserted here, not assumed to have kept its grant.
+    for table in ("domains", "domain_checks", "domain_health",
+                  "domain_placement_latest"):
         r = requests.get(f"{REST}/{table}", headers=head(k),
                          params={"select": "*", "limit": 1}, timeout=30)
         ok(f"read {table}", r.status_code == 200, f"-> {r.status_code}")
@@ -148,6 +152,21 @@ def main():
     r = requests.patch(f"{REST}/domain_checks", headers=head(k, write=True),
                        params={"id": "eq.1"}, json={"score": 100}, timeout=30)
     ok("UPDATE domain_checks REFUSED", r.status_code not in (200, 204),
+       f"-> {r.status_code} (it went through!)")
+
+    # Placement is EVIDENCE, not a curated field. `client` and `status` are the only
+    # two things a browser may change; a measured inbox rate is never one of them.
+    r = requests.patch(f"{REST}/domain_placement", headers=head(k, write=True),
+                       params={"id": "eq.1"}, json={"inbox_pct": 100}, timeout=30)
+    ok("UPDATE domain_placement REFUSED", r.status_code not in (200, 204),
+       f"-> {r.status_code} (it went through!)")
+
+    r = requests.post(f"{REST}/domain_placement", headers=head(k, write=True),
+                      json={"domain": "anon-probe-should-not-exist.test",
+                            "provider": "google", "tested_at": "2000-01-01",
+                            "test_id": 0, "seeds": 1, "inbox": 1, "spam": 0},
+                      timeout=30)
+    ok("INSERT domain_placement REFUSED", r.status_code not in (200, 201),
        f"-> {r.status_code} (it went through!)")
 
     # ---- and CANNOT reach the SENSITIVE hiring tables in `public` -----------

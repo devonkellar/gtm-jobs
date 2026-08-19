@@ -88,7 +88,20 @@ def load():
             "order": "checked_at.desc", "limit": 1000}):
         latest.setdefault(c["domain"], c)
 
+    # Inbox placement, per provider. A separate question from the DNS check and a
+    # separate table: `check.py` proves a domain is CONFIGURED right, placement
+    # proves mail from it actually lands. A domain can pass every DNS check and
+    # still be 0% at Microsoft -- 20 of them are, on 2026-08-19.
+    place = {p["domain"]: p for p in ddb.select("domain_placement_latest", {
+        "select": "domain,google_inbox_pct,google_spam_pct,google_seeds,google_band,"
+                  "ms_inbox_pct,ms_spam_pct,ms_seeds,ms_band,tested_at",
+        "limit": 1000})}
+
     for r in rows:
+        # `None` here means NEVER TESTED, and the page must say so rather than
+        # render a blank that reads as "fine". Untested is a third state, not a
+        # missing value.
+        r["place"] = place.get(r["domain"])
         c = latest.get(r["domain"])
         r["detail"] = None
         if not c:
@@ -193,6 +206,9 @@ background:var(--card);color:var(--ink);border:1px solid var(--rule);border-radi
 .saved{font-size:.7rem;margin-left:6px;color:var(--mut)}
 .saved.ok{color:var(--ok);font-weight:700}
 .saved.bad{color:var(--hot);font-weight:700}
+td.pl{white-space:nowrap;font-variant-numeric:tabular-nums}
+.seeds{font-size:.68rem;color:var(--mut);margin-top:1px}
+.untested{font-size:.74rem;font-style:italic}
 """
 
 JS = """
@@ -301,8 +317,70 @@ function curClient(dom){ var r=rowOf(dom); return r?r.client:null; }
 function kv(l,v,c){return '<div class="kv"><span>'+l+'</span><b class="'+(c||'')+'">'
 +esc(v)+'</b></div>';}
 
+/* Placement filter. "Safe" is the measured GREEN band (>=90% inbox, <2% spam),
+   never an assumption -- an untested domain matches only `untested`, so asking for
+   "safe for Microsoft" can never hand back a domain nobody has measured. */
+function plmatch(d,mode){
+  var p=d.place;
+  if(mode==='untested') return !p || (p.google_inbox_pct==null&&p.ms_inbox_pct==null);
+  if(!p) return false;
+  var g=p.google_band, m=p.ms_band;
+  if(mode==='g-ok')    return g==='GREEN';
+  if(mode==='m-ok')    return m==='GREEN';
+  if(mode==='both-ok') return g==='GREEN'&&m==='GREEN';
+  if(mode==='m-bad')   return m==='RED'||m==='AMBER';
+  if(mode==='g-bad')   return g==='RED'||g==='AMBER';
+  return true;
+}
+
+/* One placement cell: inbox% at ONE provider, or an explicit "not tested".
+
+   Never tested is NOT the same as tested-and-fine, and a blank cell would read as
+   the latter. It renders as the word `untested`, so a domain nobody has measured
+   can never be mistaken for one that passed. */
+function plcell(d,which){
+  var p=d.place;
+  if(!p) return '<td class="pl"><span class="mut untested">untested</span></td>';
+  var pct=p[which==='google'?'google_inbox_pct':'ms_inbox_pct'];
+  var n  =p[which==='google'?'google_seeds':'ms_seeds'];
+  var bnd=p[which==='google'?'google_band':'ms_band'];
+  if(pct==null) return '<td class="pl"><span class="mut untested">untested</span></td>';
+  /* Seed counts are small by nature (7-8 per provider per test). Show n so a 100%
+     off 8 seeds is not read with the same confidence as 100% off 200. */
+  return '<td class="pl"><span class="sc b-'+bnd+'">'+pct+'%</span>'
+    +'<div class="seeds">n='+n+'</div></td>';
+}
+
+/* The placement card. Always rendered, even with no data -- "never tested" is the
+   finding in that case, and omitting the card would hide it. */
+function placecard(d){
+  var p=d.place;
+  if(!p||(p.google_inbox_pct==null&&p.ms_inbox_pct==null)){
+    return '<div class="dl-card"><h4>Inbox placement</h4>'
+      +kv('Google','never tested','mid')+kv('Microsoft','never tested','mid')
+      +'<div class="seeds">No seed test has ever covered this domain, so nothing '
+      +'here is known either way.</div></div>';
+  }
+  var line=function(lbl,pct,spam,n,bnd){
+    if(pct==null) return kv(lbl,'never tested','mid');
+    return kv(lbl,pct+'% inbox / '+spam+'% spam (n='+n+')',
+      bnd==='GREEN'?'ok':(bnd==='AMBER'?'mid':'bad'));
+  };
+  var when=p.tested_at?String(p.tested_at).slice(0,10):'-';
+  return '<div class="dl-card"><h4>Inbox placement</h4>'
+    +line('Google',p.google_inbox_pct,p.google_spam_pct,p.google_seeds,p.google_band)
+    +line('Microsoft',p.ms_inbox_pct,p.ms_spam_pct,p.ms_seeds,p.ms_band)
+    +kv('Last tested',when,'')
+    +'</div>';
+}
+
 function detail(d){
-  var v=d.detail; if(!v) return '';
+  var v=d.detail;
+  /* An unchecked domain (parked/retired, no DNS check) may still have placement
+     history worth reading, so the panel opens with just that card rather than
+     returning nothing. */
+  if(!v) return '<div class="dl-detail"><div class="dl-cards">'
+    +placecard(d)+'</div></div>';
   var yn=function(s,g){return s===g?'ok':(s==='UNKNOWN'?'mid':'bad');};
   var sl=v.sl||{};
   var auth=kv('SPF',v.spf==='PRESENT'?(v.spf_policy||'present'):(v.spf||'-'),yn(v.spf,'PRESENT'))
@@ -330,6 +408,7 @@ function detail(d){
     +'<div class="dl-card"><h4>Authentication</h4>'+auth+'</div>'
     +'<div class="dl-card"><h4>Reputation &amp; infrastructure</h4>'+rep+'</div>'
     +'<div class="dl-card"><h4>Warmup (Smartlead)</h4>'+warm+'</div>'
+    +placecard(d)
     +blk+'</div></div>';
 }
 
@@ -337,10 +416,12 @@ function apply(){
   var q=(document.getElementById('q').value||'').toLowerCase();
   var st=document.getElementById('st').value;
   var bd=document.getElementById('bd').value;
+  var pl=document.getElementById('pl').value;
   var rows=DATA.filter(function(d){
     if(st&&d.status!==st)return false;
     if(bd==='NONE'){if(d.band)return false;}
     else if(bd&&d.band!==bd)return false;
+    if(pl&&!plmatch(d,pl))return false;
     if(q){var h=(d.domain+' '+(d.client||'')+' '
       +(d.top_action||'')+' '+(d.registrar||'')+' '+d.status).toLowerCase();
       if(h.indexOf(q)<0)return false;}
@@ -348,6 +429,18 @@ function apply(){
   });
   rows.sort(function(a,b){
     var x=a[SORT.col],y=b[SORT.col];
+    /* Placement lives on a nested object, so it needs pulling out before it can
+       be compared -- sorting on the bare column name would compare undefined to
+       undefined and silently do nothing. */
+    if(SORT.col==='google_inbox'||SORT.col==='ms_inbox'){
+      var f=SORT.col==='google_inbox'?'google_inbox_pct':'ms_inbox_pct';
+      x=a.place?a.place[f]:null; y=b.place?b.place[f]:null;
+      /* Untested sorts LAST in both directions. It is not a good score and not a
+         bad one -- treating null as 0 would put every untested domain at the top
+         of a worst-first list and bury the domains actually measured as failing. */
+      if(x==null)return 1; if(y==null)return -1;
+      return (x-y)*SORT.dir;
+    }
     /* unchecked domains have no score: park them last rather than let a null
        sort as if it were zero and lead the worst-first list. */
     if(SORT.col==='score'||SORT.col==='days_to_expiry'){
@@ -369,6 +462,7 @@ function apply(){
       +'<td class="sc b-'+b+'">'+(d.score!=null?d.score:'<span class="mut">-</span>')+'</td>'
       +'<td>'+(b?'<span class="pill '+(b==='RED'?'p-hot':b==='AMBER'?'p-inf':'p-ok')
         +'">'+b+'</span>':'<span class="mut">unchecked</span>')+'</td>'
+      +plcell(d,'google')+plcell(d,'ms')
       +'<td class="cl" onclick="event.stopPropagation()">'+stsel(d)+'</td>'
       +'<td class="em">'+(d.mailbox_count||'')+'</td>'
       +'<td>'+(d.top_action?esc(d.top_action):'<span class="mut">'
@@ -377,14 +471,14 @@ function apply(){
         +esc(d.gate_tripped.replace('soft:','').replace(/_/g,' '))+'</div>':'')+'</td>'
       +'<td class="em">'+(d.days_to_expiry!=null?d.days_to_expiry+'d':'-')
       +(d.auto_renew===false?'<div class="norenew">no auto-renew</div>':'')+'</td></tr>';
-    if(o){h+='<tr class="det"><td colspan="10">'+detail(d)+'</td></tr>';}
+    if(o){h+='<tr class="det"><td colspan="12">'+detail(d)+'</td></tr>';}
   }
   document.getElementById('rows').innerHTML=h;
 }
 function tog(tr,dom){OPEN[dom]=!OPEN[dom];apply();}
 function sortby(c){if(SORT.col===c){SORT.dir*=-1;}else{SORT.col=c;SORT.dir=1;}apply();}
 document.addEventListener('DOMContentLoaded',function(){
-  ['q','st','bd'].forEach(function(id){
+  ['q','st','bd','pl'].forEach(function(id){
     var el=document.getElementById(id);
     el.addEventListener(el.tagName==='SELECT'?'change':'input',apply);
   });
@@ -428,6 +522,62 @@ def render(rows, gap, today):
               'control domains, confirmed through three independent resolvers. '
               '<code>64</code> is the ABUSE bit in SURBL&rsquo;s published bitmask, '
               'not a blocked-query code.</p></div>')
+
+    # Placement, stated before the table. A domain that passes every DNS check and
+    # still cannot reach Microsoft is invisible in the band column, because the band
+    # only grades configuration. It has to be said in words or it is not said.
+    ms_dead = sorted(
+        (r for r in rows
+         if (r.get("place") or {}).get("ms_band") in ("RED", "AMBER")),
+        key=lambda r: r["place"]["ms_inbox_pct"])
+    sending = [r for r in rows
+               if r["status"] in ("new", "warming", "active")
+               and (r.get("mailbox_count") or 0) > 0]
+    never = [r for r in sending
+             if not (r.get("place") or {}).get("google_inbox_pct")
+             and not (r.get("place") or {}).get("ms_inbox_pct")]
+
+    if ms_dead:
+        both_ok = sum(1 for r in rows
+                      if (r.get("place") or {}).get("ms_band") == "GREEN"
+                      and (r.get("place") or {}).get("google_band") == "GREEN")
+        alerts += (
+            '<div class="dl-alert"><h3>'
+            f'{len(ms_dead)} domains reach Google but not Microsoft</h3>'
+            '<p>These are not weak domains, they are <b>split</b> domains: mail from '
+            'them inboxes at Google and goes to spam at Office365. A blended '
+            'placement number hides this entirely &mdash; the smartbound.* pool reads '
+            '52% overall, which sounds like &ldquo;warm it up&rdquo;, when it is '
+            'really <b>96% Google / 6% Microsoft</b>. Those need opposite decisions, '
+            'so placement is stored and shown per provider and never averaged.</p>'
+            '<div class="dl-doms">'
+            + "".join(
+                f'<code class="dead">{esc(r["domain"])} &middot; '
+                f'{r["place"]["ms_inbox_pct"]}%</code>' for r in ms_dead[:28])
+            + '</div><p class="dl-why">Sending to a Microsoft-hosted recipient from '
+              'one of these is a wasted send. <b>' + str(both_ok) + ' domains are '
+              'measured GREEN at both providers</b> &mdash; route Microsoft '
+              'recipients through those. Filter the table by <b>Safe for '
+              'Microsoft</b> to list them.</p></div>')
+
+    if never:
+        mbx = sum(r.get("mailbox_count") or 0 for r in never)
+        alerts += (
+            '<div class="dl-alert warn"><h3>'
+            f'{len(never)} sending domains have never been placement tested</h3>'
+            f'<p>They hold <b>{mbx} live mailboxes</b> and pass the DNS check, but '
+            'nothing has ever measured where their mail actually lands. A DNS check '
+            'cannot answer that &mdash; every domain in the alert above is '
+            'authenticated correctly and still fails at Microsoft. <b>Untested is '
+            'shown as <em>untested</em>, never as a blank</b>, so it cannot be read '
+            'as a pass.</p><div class="dl-doms">'
+            + "".join(
+                f'<code>{esc(r["domain"])} &middot; {r.get("mailbox_count") or 0} mbx'
+                '</code>' for r in sorted(
+                    never, key=lambda r: -(r.get("mailbox_count") or 0))[:28])
+            + '</div><p class="dl-why">Run <code>/placement-test</code> against the '
+              'campaigns these send from, then <code>placement.py</code> to fold the '
+              'result in here.</p></div>')
 
     if gap:
         dead = sum(g["dead"] for g in gap)
@@ -473,6 +623,15 @@ nothing, so they are left alone. Last checked {when}.</p>
     <option value="RED">Red</option><option value="AMBER">Amber</option>
     <option value="GREEN">Green</option><option value="NONE">Unchecked</option>
   </select>
+  <select id="pl" title="Filter by measured inbox placement">
+    <option value="">All placement</option>
+    <option value="g-ok">Safe for Google</option>
+    <option value="m-ok">Safe for Microsoft</option>
+    <option value="both-ok">Safe for both</option>
+    <option value="m-bad">Fails at Microsoft</option>
+    <option value="g-bad">Fails at Google</option>
+    <option value="untested">Never placement-tested</option>
+  </select>
   <span class="count" id="count"></span>
 </div>
 
@@ -484,6 +643,8 @@ nothing, so they are left alone. Last checked {when}.</p>
   <th onclick="sortby('registrar')">Registrar</th>
   <th onclick="sortby('score')">Score</th>
   <th onclick="sortby('band')">Band</th>
+  <th onclick="sortby('google_inbox')" title="Inbox rate at Google seed inboxes">Google</th>
+  <th onclick="sortby('ms_inbox')" title="Inbox rate at Microsoft/Office365 seed inboxes">Microsoft</th>
   <th onclick="sortby('status')">Status</th>
   <th onclick="sortby('mailbox_count')">Mbx</th>
   <th>What to do</th>
