@@ -185,9 +185,32 @@ def nullable(v):
 
 
 def sb_upsert(table, rows, conflict, chunk=500):
-    """Upsert into Supabase. Never deletes; safe to re-run."""
+    """Upsert into Supabase. Never deletes; safe to re-run.
+
+    Rows are DEDUPED on the conflict key first, last occurrence winning.
+    Postgres cannot apply ON CONFLICT DO UPDATE to the same row twice inside one
+    command -- it aborts the whole statement with SQLSTATE 21000. Smartlead
+    genuinely returns the same lead twice in one campaign (one duplicate in
+    campaign 3766636 alone), so this is real upstream data, not a fetch bug, and
+    every campaign carrying one lost its ENTIRE archive: 3,820 leads across four
+    campaigns wrote nothing while the run still reported per-campaign totals.
+    """
     if not rows:
         return 0
+    keys = [k.strip() for k in conflict.split(",")]
+    deduped, seen = [], {}
+    for row in rows:
+        k = tuple(row.get(x) for x in keys)
+        if k in seen:
+            deduped[seen[k]] = row          # last write wins
+        else:
+            seen[k] = len(deduped)
+            deduped.append(row)
+    if len(deduped) != len(rows):
+        print(f"  [dedupe] {table}: {len(rows) - len(deduped)} duplicate "
+              f"{conflict} row(s) collapsed")
+    rows = deduped
+
     done = 0
     headers = dict(SB_HEADERS)
     headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
@@ -204,10 +227,18 @@ def sb_upsert(table, rows, conflict, chunk=500):
             if r.status_code in (200, 201, 204):
                 done += len(batch)
                 break
-            if r.status_code in (429, 500, 502, 503, 504):
+            # A 500 from PostgREST that carries a SQLSTATE is a permanent data
+            # error (bad payload), not a transient blip. Retrying it wasted four
+            # attempts and then threw the response away, so the log said only
+            # "failed after retries" and the actual cause -- 21000, duplicate
+            # conflict key -- was invisible for as long as it had been happening.
+            body = r.text[:400]
+            permanent_500 = r.status_code == 500 and '"code"' in body
+            if r.status_code in (429, 502, 503, 504) or (
+                    r.status_code == 500 and not permanent_500):
                 time.sleep(2 * (attempt + 1))
                 continue
-            raise RuntimeError(f"supabase {table} -> {r.status_code}: {r.text[:400]}")
+            raise RuntimeError(f"supabase {table} -> {r.status_code}: {body}")
         else:
             raise RuntimeError(f"supabase {table} failed after retries")
     return done
