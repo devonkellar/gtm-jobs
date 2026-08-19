@@ -4,3 +4,6 @@ requests>=2.31
 gspread>=6.0
 google-auth>=2.28
 google-api-python-client>=2.120
+# The vendored deliverability set (reporting/deliverability/) loads a local
+# .env on the laptop; absent in CI, where load_dotenv is a harmless no-op.
+python-dotenv>=1.0

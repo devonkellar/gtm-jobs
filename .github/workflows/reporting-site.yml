@@ -62,6 +62,38 @@ jobs:
           GTM_JOBS_SCRIPTS: ${{ github.workspace }}/scripts
         run: python reporting/build_site.py
 
+      # The second page of the ops site. Same deploy, same nav -- deploy_site.py
+      # on the laptop builds both and refuses to ship one without the other, so
+      # CI has to as well or its publish deletes whichever page it did not make.
+      - name: Build the domain-health page
+        env:
+          HIRING_SUPABASE_URL: ${{ secrets.HIRING_SUPABASE_URL }}
+          HIRING_SUPABASE_SERVICE_KEY: ${{ secrets.HIRING_SUPABASE_SERVICE_KEY }}
+          HIRING_SUPABASE_ANON_KEY: ${{ secrets.HIRING_SUPABASE_ANON_KEY }}
+          # Optional: only the unregistered-senders panel needs it, and the page
+          # degrades to omitting that panel rather than failing without it.
+          SMARTLEAD_API_KEY: ${{ secrets.SMARTLEAD_API_KEY }}
+          # name.com's API username. A secret only because it is a personal
+          # email and this repo is public -- registrars.py reads it from the
+          # environment rather than carrying it as a literal.
+          NAMECOM_USER: ${{ secrets.NAMECOM_USER }}
+        run: python reporting/build_deliverability.py
+
+      # THE ANON-KEY GATE. The domain-health page ships a Supabase anon key so the
+      # client/status dropdowns can save. The site is unlisted but NOT
+      # authenticated, so that key is readable by anyone with the link --
+      # publishing it without proving its scope would be publishing a write
+      # credential on trust. verify_anon.py asserts against the LIVE database
+      # that it writes `client` and `status` and nothing else. deploy_site.py
+      # runs this before every laptop deploy; CI must not be the weaker path.
+      - name: Prove the published anon key can only edit client/status
+        env:
+          HIRING_SUPABASE_URL: ${{ secrets.HIRING_SUPABASE_URL }}
+          HIRING_SUPABASE_SERVICE_KEY: ${{ secrets.HIRING_SUPABASE_SERVICE_KEY }}
+          HIRING_SUPABASE_ANON_KEY: ${{ secrets.HIRING_SUPABASE_ANON_KEY }}
+        working-directory: reporting/deliverability
+        run: python verify_anon.py
+
       # A build that "succeeds" but emits a shell with no data would otherwise
       # publish over a good page. Fail here instead of deploying the damage.
       - name: Verify the page actually has data

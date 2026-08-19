@@ -44,6 +44,26 @@ PAIRS += [
      SOS_SCRIPTS / "archive_campaign_results.py"),
 ]
 
+# The domain-health page and everything it imports, vendored 2026-08-19 so CI
+# can build the second page of the ops site instead of publishing without it.
+# Flat here, split across two folders in the freelance repo -- ddb.py resolves
+# db.py either way, which is why it can still be compared byte for byte.
+FREELANCE_GROWTH = Path(
+    r"C:\Users\Devon\devon-kellar-freelance\functions\growth")
+_DELIV = HERE / "deliverability"
+PAIRS += [
+    (HERE / "build_deliverability.py",
+     FREELANCE_GROWTH / "reporting" / "build_deliverability.py"),
+    (HERE / "site_shell.py",
+     FREELANCE_GROWTH / "reporting" / "site_shell.py"),
+    (_DELIV / "ddb.py",            FREELANCE_GROWTH / "deliverability" / "ddb.py"),
+    (_DELIV / "registrars.py",     FREELANCE_GROWTH / "deliverability" / "registrars.py"),
+    (_DELIV / "smartlead.py",      FREELANCE_GROWTH / "deliverability" / "smartlead.py"),
+    (_DELIV / "sync_registrars.py", FREELANCE_GROWTH / "deliverability" / "sync_registrars.py"),
+    (_DELIV / "verify_anon.py",    FREELANCE_GROWTH / "deliverability" / "verify_anon.py"),
+    (_DELIV / "db.py",             FREELANCE_GROWTH / "pipeline" / "db.py"),
+]
+
 # NOT COMPARED, AND WHY.
 #
 # smartlead_sync.py, smartlead_campaign_stats.py, smartlead_deliverability.py
