@@ -154,10 +154,19 @@ def _headers() -> dict:
 
 
 def _to_db_row(row: dict) -> dict:
-    """CSV row -> Supabase row. Blank strings become NULL, not ''."""
+    """Reply row -> Supabase row. Blank strings become NULL, not ''.
+
+    Values are coerced with str() before stripping. Rows arriving from the CSV
+    are all text, but rows straight off the Smartlead API are not -- campaign_id
+    is a real int -- and `.strip()` on one of those raises AttributeError. That
+    was masked for as long as every row went through the CSV writer, which
+    coerced to text on the way out; it surfaced the first time a run upserted
+    API rows directly.
+    """
     out = {}
     for csv_col, db_col in CSV_TO_DB.items():
-        val = (row.get(csv_col) or "").strip()
+        raw = row.get(csv_col)
+        val = "" if raw is None else str(raw).strip()
         if val == "":
             out[db_col] = None
         elif db_col in _INT_COLS:
