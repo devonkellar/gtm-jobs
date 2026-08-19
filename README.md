@@ -60,39 +60,47 @@ Set as repository secrets. Never commit a key.
 `sos/shared/config/.env`. That is deliberate: the same file works in CI and on
 the laptop, so the laptop keeps running during the migration.
 
-## The state problem -- read before enabling any cron
+## The state problem -- SOLVED for replies, still real for everything else
 
-Most of these scripts still read and write **`replies_log.csv`** (3.5 MB, 4,597
-rows) on local disk. One script writes it; **20 scripts across three repos read
-it.** It is the shared bus of the whole system.
+**This section used to say no workflow here had a `schedule:` trigger. Two do.**
+`smartlead-sync` runs at 05:30 UTC and `reporting-site` at 06:10 UTC, in that
+order, because the site reads what the sync just wrote.
 
-A CI runner is stateless. The file starts empty and is discarded at the end. So:
+The problem it describes was real: `replies_log.csv` was the shared bus, a CI
+runner is stateless, and a real run in CI would have produced a partial file
+nothing else could see. That is fixed for replies. `scripts/replies_store.py`
+is the seam; the reply log lives in Supabase (`campaign_replies`, project
+`ddpxbmsiiwtjjpsguege` -- the FREELANCE project, not Smartbound's
+`mgonnoxpaqqcbtrkzmpf` this section used to name); `smartlead_sync.py` reads its
+dedup set from the same place it writes, so it holds nothing on disk and runs
+anywhere. The CSV write was dropped on 2026-08-19 and **nothing writes that file
+now** -- see PLAN.md, "The CSV is dead", including the one job that has not
+noticed.
 
-- `--dry-run` in CI is safe and meaningful.
-- A **real** run in CI would produce a partial file that nothing else can see.
-
-That is why **no workflow here has a `schedule:` trigger yet** -- they are
-`workflow_dispatch` only. The cron goes on once the CSV moves to Supabase
-(`campaign_sends` / a new `campaign_replies` table, project
-`mgonnoxpaqqcbtrkzmpf`). Until then the laptop remains the system of record.
+**The rule still stands for every job not yet ported.** Local state is what
+blocks a cron, so before enabling one, find what the job reads and writes:
+`founding-gtm-scan`'s dedup cursor and FathomSync's transcript tree are the two
+known cases, and neither has a seam yet.
 
 ## Migration status
 
 | Job | Ported | Cron on | Notes |
 |---|---|---|---|
-| smartlead-sync | yes | **no** | **Verified in Actions 2026-08-16: success in 6m15s**, 33 campaigns, live reply counts, `--dry-run`. The CSV producer, so the cron is blocked on the Supabase move. |
-| smartlead-campaign-stats | not yet | no | |
+| smartlead-sync | yes | **YES, 05:30 UTC** | Cron enabled 2026-08-19. Holds no local state: writes `campaign_replies` and reads its dedup set from there. Took three failures the same morning to get there -- int `campaign_id` from the API, PostgREST's inability to name an expression index as a conflict target, and a DB password the workflow never passed. |
+| smartlead-campaign-stats | not yet | no | Already on the seam. Open question is where its output goes now sheets are being retired, not the port. |
 | smartlead-account-stats | not yet | no | |
-| smartlead-deliverability | not yet | no | |
-| campaign-archive | not yet | no | Already dual-writes Supabase; closest to cron-ready. |
+| smartlead-deliverability | not yet | no | Already on the seam. Its page is already built in CI by `reporting-site`. |
+| campaign-archive | not yet | no | **Next up.** Already dual-writes Supabase and already reads replies through the seam, so it needs a workflow and nothing else. |
 | weekly-report | not yet | no | Needs 27 campaign README files mirrored in. |
 | signal-extraction | not yet | no | |
 | founding-gtm-scan | not yet | no | Dedup cursor is local state. |
 | install-kpis / install-replies | not yet | no | Cores live in blue-summit. |
 
-Staying on the laptop deliberately: **FathomSync** (writes transcripts into the
-local SOS tree, which is where they are read) and **FinanceDaily** (a `.bat`
-outside all three repos).
+Staying on the laptop deliberately: **FinanceDaily** (a `.bat` outside all three
+repos, ADR-0012). **FathomSync is no longer on this list** -- it was excluded for
+the file-is-the-interface problem, not a privacy rule, and Devon confirmed on
+2026-08-19 that the transcripts can live in Supabase. It needs a seam like
+`replies_store.py`, then it migrates. Three readers, not twenty-seven.
 
 ## Running a job locally
 

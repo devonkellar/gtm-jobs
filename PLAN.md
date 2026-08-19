@@ -95,6 +95,23 @@ sync with.
      `replies_store`, the CSV write dropped, the dedup set moved to Supabase,
      cron enabled at 05:30 UTC (before reporting-site at 06:10). The job now
      holds nothing on disk. First job fully off the laptop.
+   - **Next, in this order, and the order is the argument:**
+     1. **Cut over or kill `blue-summit/sync_install_replies.py`** -- not a
+        migration, a live job silently reporting success against a frozen file
+        (see "The CSV is dead"). Smallest change here, and the only one that is
+        currently losing data.
+     2. **Delete the three dead `REPLIES_CSV` constants**, so the next person
+        auditing this does not have to redo the grep.
+     3. **campaign-archive.** Closest to cron-ready: it already dual-writes
+        Supabase and already reads replies through the seam, so it needs a
+        workflow and nothing else.
+     4. **The two stats jobs** (`smartlead-campaign-stats`,
+        `smartlead-account-stats`) -- both already on the seam; the question is
+        only where their output goes now that sheets are being retired.
+     5. **weekly-report** last of the Smartlead set: it needs 27 campaign README
+        files mirrored in, which is a real content decision, not a port.
+   - **FathomSync** is the other track and does not queue behind these: it needs
+     its own seam first (below).
 
 ## The trap this hit, 2026-08-19
 
@@ -122,11 +139,51 @@ run. `reporting/check_vendored.py` now covers the pairs that must match, and
 the reporting workflow refuses to publish a site missing a page its nav links
 to.
 
+## The CSV is dead, and one job has not noticed
+
+`smartlead_sync.py` stopped writing `replies_log.csv` on 2026-08-19. Nothing
+writes it now. That was the intended end state, but "20 scripts across three
+repos read it" stayed in this file as a live blocker while item 5 above claimed
+every reader was cut over. Both could not be true. Audited, by grep, per tree:
+
+| Tree | Live readers of the CSV | Detail |
+|---|--:|---|
+| `gtm-jobs` | **0** | `weekly_report`, `smartlead_campaign_stats`, `smartlead_deliverability` all call `replies_store.load_all()`. Each still *defines* a `REPLIES_CSV` constant that nothing uses. |
+| `devon-kellar-freelance` | **0** | `morning_brief.py`, `sync_install_replies_attio.py` and `reporting/build_site.py` go through the seam; the CSV survives only in comments. |
+| `blue-summit` | **1** | `product/outbound-install/scripts/sync_install_replies.py` still reads `C:\Users\Devon\sos\...\replies_log.csv` for real. |
+| `sos` | unverified | Its GitHub mirror was last pushed 2026-08-17, two days before the write was dropped, so it cannot answer this. Only the laptop can. |
+
+**The one live reader is the problem.** `sync_install_replies.py` appends *new
+positive install replies* to a Google Sheet, deduped against what the sheet
+already holds. Pointed at a file that no longer grows, it does not fail -- it
+finds nothing new, exits 0, and reports success every time it runs. This is the
+same failure the "green, on time, wrong place" section above describes, read
+backwards: a job reading from a source that has quietly stopped moving. It
+should be cut over to the seam or switched off; leaving it is choosing a job
+that lies.
+
+**Delete the three dead `REPLIES_CSV` constants.** They are why this took an
+audit to establish: a constant naming the CSV at the top of a file reads as
+"this job needs the CSV" long after the code stopped using it, and it is exactly
+what kept a dissolved blocker alive in this plan.
+
+## The premise about SOS needs re-checking
+
+The README's stated reason for this repo existing -- that SOS is a local-only
+working folder which is not going to GitHub -- **no longer describes reality**,
+which means the data split this repo was carved out to create is not the split
+that exists.
+
+**The specifics are deliberately not in this file: it is world-readable.** They
+are in the freelance repo's session log for 2026-08-19, and they need a decision
+from Devon before this README's reasoning is rewritten to match.
+
 ## Still true from the original plan
 
-- `replies_log.csv` is written by one job and read by twenty across three repos.
-  The seam (`scripts/replies_store.py`) exists and is verified; the remaining
-  readers still point at the CSV and are being left alone for now.
+- ~~`replies_log.csv` is written by one job and read by twenty across three
+  repos.~~ **Not true any more, and it contradicted item 5 above.** Audited
+  2026-08-19 -- see "The CSV is dead" above. The seam
+  (`scripts/replies_store.py`) is what everything reads now.
 - The laptop stays the system of record until a job's readers are all cloud-side.
 - FinanceDaily stays on the laptop deliberately (ADR-0012).
 - **FathomSync is no longer a permanent exception.** It was excluded because it
