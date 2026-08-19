@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 build_site.py — the reporting site that replaces the Google Sheets.
-
   ############################################################################
   # VENDORED COPY. The original lives in the freelance repo at              #
   #   functions/growth/reporting/build_site.py                              #
@@ -12,6 +11,7 @@ build_site.py — the reporting site that replaces the Google Sheets.
   # freelance one and re-copy; never edit only this. check_vendored.py in   #
   # this repo fails CI if they diverge, so drift is loud instead of silent. #
   ############################################################################
+
 THE RULE: every number is a link. "23 replies this week" opens the 23 replies,
 with who, which campaign, and what they wrote. No number exists on this site
 that you cannot open.
@@ -50,13 +50,12 @@ for _s in (sys.stdout, sys.stderr):
 
 HERE = Path(__file__).parent
 OUT = HERE / "out"
-
 # replies_store lives in the gtm-jobs repo. Two layouts must both work:
 #   - laptop: this file is in devon-kellar-freelance, gtm-jobs is a sibling
 #   - CI:     this file IS in gtm-jobs, next to scripts/
 # Resolved by looking rather than hardcoding, so the same file runs in both.
 for _cand in (HERE / "scripts",                       # vendored into gtm-jobs
-              HERE.parent.parent.parent / "scripts",  # gtm-jobs/reporting/
+              HERE.parent / "scripts",                # gtm-jobs/reporting/
               Path(os.environ.get("GTM_JOBS_SCRIPTS", "")),
               Path(r"C:\Users\Devon\gtm-jobs\scripts")):
     if _cand and (_cand / "replies_store.py").exists():
@@ -66,6 +65,8 @@ else:
     sys.exit("[FAIL] cannot find replies_store.py - set GTM_JOBS_SCRIPTS")
 os.environ.setdefault("REPLIES_BACKEND", "supabase")
 import replies_store as rs  # noqa: E402
+
+import site_shell  # noqa: E402  -- the shared nav; see its docstring
 
 POSITIVE = ("Interested", "Information Request", "Meeting Request")
 NEGATIVE = ("Not Interested", "Do Not Contact", "Wrong Person")
@@ -313,11 +314,16 @@ def render(rows, today):
     client_n = len([r for r in rows if r["_client"] and r["_date"]])
     undated = len([r for r in rows if not r["_date"]])
 
-    return f"""<title>GTM Reporting</title>
+    # The nav comes from site_shell so this page and the domain-health page cannot
+    # drift apart. Only the nav is shared: this page keeps its own CSS and layout,
+    # because rewriting a working page to fit a shell is a change with no upside.
+    return f"""<title>Replies &middot; Ops</title>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<style>{CSS}</style>
+<meta name="robots" content="noindex,nofollow,noarchive">
+<style>{CSS}{site_shell.NAV_CSS}</style>
+{site_shell.nav("replies")}
 <div class=wrap>
-<h1>GTM Reporting</h1>
+<h1>Replies</h1>
 <p class=sub>Live from Supabase &middot; built {today.isoformat()} &middot;
 every number below opens the rows behind it</p>
 

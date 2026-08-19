@@ -82,6 +82,33 @@ jobs:
           print(f"[OK] {len(d)} records, {pos} positive, {p.stat().st_size//1024} KB")
           PY
 
+      # A Pages deploy REPLACES the whole site: any file not in out/ is deleted
+      # from production. site_shell.PAGES renders a nav link for every page of
+      # the ops site, but this workflow only builds the replies page -- so
+      # publishing out/ as-is would take /deliverability offline and leave the
+      # nav pointing at a 404. deploy_site.py on the laptop refuses to ship a
+      # partial site for exactly this reason; CI must refuse too, or the two
+      # publishers race and whichever ran last decides what exists.
+      - name: Refuse to publish a site missing a page its nav links to
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+          sys.path.insert(0, "reporting")
+          import site_shell
+          out = pathlib.Path("reporting/out")
+          missing = [fn for _slug, fn, _lbl in site_shell.PAGES
+                     if not (out / fn).exists()]
+          if missing:
+              sys.exit(
+                  "[FAIL] nav links to pages this build did not produce: "
+                  + ", ".join(missing)
+                  + "\n       Publishing would delete them from production and "
+                    "leave dead nav links.\n       Either vendor their builder "
+                    "into this repo or drop them from site_shell.PAGES."
+              )
+          print(f"[OK] all {len(site_shell.PAGES)} nav pages present")
+          PY
+
       - name: Publish to Cloudflare Pages
         if: github.event_name == 'schedule' || github.event.inputs.deploy != 'false'
         env:
