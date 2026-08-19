@@ -36,6 +36,27 @@ PAIRS = [
           r"\build_site.py")),
 ]
 
+# Pairs whose other side is the SOS laptop copy rather than the freelance repo.
+# SOS is never checked out in CI either, so these skip there by the same rule.
+SOS_SCRIPTS = Path(r"C:\Users\Devon\sos\shared\scripts")
+PAIRS += [
+    (HERE.parent / "scripts" / "archive_campaign_results.py",
+     SOS_SCRIPTS / "archive_campaign_results.py"),
+]
+
+# NOT COMPARED, AND WHY.
+#
+# smartlead_sync.py, smartlead_campaign_stats.py, smartlead_deliverability.py
+# and weekly_report.py exist in both trees and are SUPPOSED to differ right
+# now. Each gtm-jobs copy reads and writes through replies_store (Supabase);
+# each SOS copy still talks to replies_log.csv directly. That gap IS the
+# migration -- it closes when the last CSV reader is cut over, not before.
+#
+# Listing them here would print four permanent red lines on every run. A check
+# that is always failing gets skimmed past, and then the one real drift hides
+# in the noise -- which is precisely how assert_statuses went missing from
+# attio_client.py for three days. So they stay out until their cutover lands,
+# and then they get added in the same commit.
 # The vendored copy carries a banner the original does not, so a byte compare
 # would always fail. The banner is exactly the block of lines starting with
 # "  #" inside the module docstring; dropping every such line from BOTH files
